@@ -26,6 +26,15 @@ VWORLD_API_KEY = os.environ.get("VWORLD_API_KEY", "")
 VWORLD_GEOCODE_URL = "https://api.vworld.kr/req/address"
 BR_BASE = "https://apis.data.go.kr/1613000/BldRgstHubService"
 
+# 한국 공공 API 일부가 default Python UA(`python-requests/x.x`)를 차단해
+# Streamlit Cloud 등 해외 IP에서 RemoteDisconnected가 발생하는 사례 회피.
+HTTP_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                  "AppleWebKit/537.36 (KHTML, like Gecko) "
+                  "Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+}
+
 
 @dataclass
 class AddressCode:
@@ -72,10 +81,12 @@ def lookup_address(jibun_query: str) -> AddressCode | None:
             "address": q,
             "crs": "EPSG:4326",
             "format": "json",
+            "domain": "localhost",
             "key": VWORLD_API_KEY,
         }
         try:
-            r = requests.get(VWORLD_GEOCODE_URL, params=params, timeout=15)
+            r = requests.get(VWORLD_GEOCODE_URL, params=params,
+                             headers=HTTP_HEADERS, timeout=15)
             r.raise_for_status()
             data = r.json().get("response", {})
         except (requests.RequestException, ValueError) as e:
@@ -155,7 +166,8 @@ def get_title_info(addr: AddressCode) -> list[BuildingTitle]:
         "pageNo": 1,
         "_type": "json",
     }
-    r = requests.get(f"{BR_BASE}/getBrTitleInfo", params=params, timeout=15)
+    r = requests.get(f"{BR_BASE}/getBrTitleInfo", params=params,
+                     headers=HTTP_HEADERS, timeout=15)
     r.raise_for_status()
     body = r.json()["response"]["body"]
     raw = body.get("items", {}).get("item", [])
@@ -213,7 +225,8 @@ def _fetch_unit_page(addr: AddressCode, page: int) -> dict:
         "pageNo": page,
         "_type": "json",
     }
-    r = requests.get(f"{BR_BASE}/getBrExposPubuseAreaInfo", params=params, timeout=30)
+    r = requests.get(f"{BR_BASE}/getBrExposPubuseAreaInfo", params=params,
+                     headers=HTTP_HEADERS, timeout=30)
     r.raise_for_status()
     body = r.json()["response"]["body"]
     items = body.get("items", {}).get("item", []) or []

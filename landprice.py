@@ -33,6 +33,14 @@ VWORLD_GEOCODE_URL = "https://api.vworld.kr/req/address"
 LAND_ATTR_ENDPOINT = "https://api.vworld.kr/ned/data/getLandCharacteristics"
 TIMEOUT_SEC = 15
 
+# 한국 공공 API가 default Python UA를 차단하는 사례 회피용 브라우저 UA.
+HTTP_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                  "AppleWebKit/537.36 (KHTML, like Gecko) "
+                  "Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+}
+
 
 def _normalize_query(q: str) -> str:
     """광역시·특별시 띄어쓰기 정규화 (main.py와 동일 로직)."""
@@ -77,8 +85,10 @@ def resolve_pnu(query: str) -> PnuResolution:
                     "address": q,
                     "crs": "EPSG:4326",
                     "format": "json",
+                    "domain": "localhost",
                     "key": api_key,
                 },
+                headers=HTTP_HEADERS,
                 timeout=TIMEOUT_SEC,
             )
             r.raise_for_status()
@@ -202,6 +212,7 @@ def fetch_land_attr(pnu: str, year: int) -> LandAttr:
                 "numOfRows": "5",
                 "pageNo": "1",
             },
+            headers=HTTP_HEADERS,
             timeout=TIMEOUT_SEC,
         )
         r.raise_for_status()
