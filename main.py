@@ -19,12 +19,11 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 # API 키는 환경변수 또는 Streamlit secrets에서 읽음. 코드에 하드코딩 X.
-# 로컬 개발: .streamlit/secrets.toml (gitignore됨)에 입력
-# 배포(Streamlit Cloud): Settings → Secrets UI에 입력
-JUSO_API_KEY = os.environ.get("JUSO_API_KEY", "")
+# 주소→PNU 변환은 VWorld 지오코딩 사용 (juso.go.kr는 해외 IP에서 timeout 발생).
 DATA_GO_KR_KEY = os.environ.get("DATA_GO_KR_KEY", "")
+VWORLD_API_KEY = os.environ.get("VWORLD_API_KEY", "")
 
-JUSO_URL = "https://business.juso.go.kr/addrlink/addrLinkApi.do"
+VWORLD_GEOCODE_URL = "https://api.vworld.kr/req/address"
 BR_BASE = "https://apis.data.go.kr/1613000/BldRgstHubService"
 
 
@@ -52,9 +51,13 @@ def _normalize_address_query(q: str) -> str:
 
 
 def lookup_address(jibun_query: str) -> AddressCode | None:
-    """지번 주소 → 건축물대장 API용 코드. 정규화 + 원본 순으로 fallback 검색."""
-    if not JUSO_API_KEY:
-        raise RuntimeError("JUSO_API_KEY 미설정 (.streamlit/secrets.toml 확인)")
+    """지번 주소 → 건축물대장 API용 코드. VWorld 지오코딩 사용.
+
+    juso.go.kr은 해외 IP에서 차단/timeout이 빈번해 클라우드 배포 환경에서 부적합.
+    VWorld의 PNU(level4LC, 19자리)에서 sigunguCd/bjdongCd/본번/부번을 분해 추출.
+    """
+    if not VWORLD_API_KEY:
+        raise RuntimeError("VWORLD_API_KEY 미설정 (.streamlit/secrets.toml 확인)")
     candidates: list[str] = []
     normalized = _normalize_address_query(jibun_query)
     candidates.append(normalized)
@@ -63,29 +66,38 @@ def lookup_address(jibun_query: str) -> AddressCode | None:
 
     for q in candidates:
         params = {
-            "confmKey": JUSO_API_KEY,
-            "currentPage": 1,
-            "countPerPage": 5,
-            "keyword": q,
-            "resultType": "json",
+            "service": "address",
+            "request": "getcoord",
+            "type": "parcel",
+            "address": q,
+            "crs": "EPSG:4326",
+            "format": "json",
+            "key": VWORLD_API_KEY,
         }
-        r = requests.get(JUSO_URL, params=params, timeout=10)
-        r.raise_for_status()
-        data = r.json()["results"]
-        if data["common"]["errorCode"] != "0":
-            raise RuntimeError(f"juso.go.kr error: {data['common']['errorMessage']}")
-        if int(data["common"]["totalCount"]) == 0:
+        try:
+            r = requests.get(VWORLD_GEOCODE_URL, params=params, timeout=15)
+            r.raise_for_status()
+            data = r.json().get("response", {})
+        except (requests.RequestException, ValueError) as e:
+            raise RuntimeError(f"VWorld 지오코딩 호출 실패: {e}")
+
+        if data.get("status") != "OK":
             continue
-        j = data["juso"][0]
-        adm_cd = j["admCd"]
+
+        struct = data.get("refined", {}).get("structure", {})
+        pnu = struct.get("level4LC", "") or ""
+        if len(pnu) != 19 or not pnu.isdigit():
+            continue
+        # PNU 11번째 자리: '1'=일반(대지), '2'=산. platGbCd: 0=대지, 1=산.
+        plat_gb = "1" if pnu[10] == "2" else "0"
         return AddressCode(
-            sigungu_cd=adm_cd[:5],
-            bjdong_cd=adm_cd[5:],
-            bun=j["lnbrMnnm"].zfill(4),
-            ji=j["lnbrSlno"].zfill(4),
-            plat_gb_cd=j["mtYn"],
-            road_addr=j["roadAddr"],
-            jibun_addr=j["jibunAddr"],
+            sigungu_cd=pnu[:5],
+            bjdong_cd=pnu[5:10],
+            bun=pnu[11:15],
+            ji=pnu[15:19],
+            plat_gb_cd=plat_gb,
+            road_addr="",  # VWorld 지오코딩에 도로명주소는 별도. 미리보기에서 빈값 표시.
+            jibun_addr=data.get("refined", {}).get("text", q),
         )
     return None
 

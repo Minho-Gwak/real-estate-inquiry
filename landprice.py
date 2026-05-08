@@ -28,7 +28,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
-JUSO_ENDPOINT = "https://business.juso.go.kr/addrlink/addrLinkApi.do"
+VWORLD_GEOCODE_URL = "https://api.vworld.kr/req/address"
 # 토지특성정보: 가격(pblntfPclnd)과 면적(lndpclAr)을 한 번에 반환.
 LAND_ATTR_ENDPOINT = "https://api.vworld.kr/ned/data/getLandCharacteristics"
 TIMEOUT_SEC = 15
@@ -42,18 +42,6 @@ def _normalize_query(q: str) -> str:
     return q
 
 
-def _build_pnu(adm_cd: str, mt_yn: str, lnbr_mnnm, lnbr_slno) -> str:
-    """PNU(19) = 법정동코드(10) + 산여부(1) + 본번(4) + 부번(4)
-    juso의 mtYn 0(일반)→PNU '1', 1(산)→PNU '2'.
-    """
-    if len(adm_cd) != 10 or not adm_cd.isdigit():
-        raise ValueError(f"법정동코드 형식 오류: {adm_cd}")
-    mountain_digit = "2" if str(mt_yn).strip() == "1" else "1"
-    main_no = str(int(lnbr_mnnm or 0)).zfill(4)
-    sub_no = str(int(lnbr_slno or 0)).zfill(4)
-    return f"{adm_cd}{mountain_digit}{main_no}{sub_no}"
-
-
 @dataclass
 class PnuResolution:
     pnu: str | None
@@ -63,10 +51,13 @@ class PnuResolution:
 
 
 def resolve_pnu(query: str) -> PnuResolution:
-    """주소 문자열 → PNU. juso API 호출 + 정규화 fallback."""
-    api_key = os.environ.get("JUSO_API_KEY", "").strip()
+    """주소 문자열 → PNU. VWorld 지오코딩 사용 (해외 IP에서도 안정).
+
+    VWorld 응답의 refined.structure.level4LC가 PNU 19자리 그대로.
+    """
+    api_key = os.environ.get("VWORLD_API_KEY", "").strip()
     if not api_key:
-        return PnuResolution(None, None, "api_error", "JUSO_API_KEY 미설정")
+        return PnuResolution(None, None, "api_error", "VWORLD_API_KEY 미설정")
 
     candidates: list[str] = []
     norm = _normalize_query(query)
@@ -78,46 +69,35 @@ def resolve_pnu(query: str) -> PnuResolution:
     for q in candidates:
         try:
             r = requests.get(
-                JUSO_ENDPOINT,
+                VWORLD_GEOCODE_URL,
                 params={
-                    "confmKey": api_key,
-                    "currentPage": 1,
-                    "countPerPage": 5,
-                    "keyword": q,
-                    "resultType": "json",
+                    "service": "address",
+                    "request": "getcoord",
+                    "type": "parcel",
+                    "address": q,
+                    "crs": "EPSG:4326",
+                    "format": "json",
+                    "key": api_key,
                 },
                 timeout=TIMEOUT_SEC,
             )
             r.raise_for_status()
-            data = r.json()
+            data = r.json().get("response", {})
         except (requests.RequestException, ValueError) as e:
-            return PnuResolution(None, None, "api_error", f"juso 호출 실패: {e}")
+            return PnuResolution(None, None, "api_error", f"VWorld 지오코딩 호출 실패: {e}")
 
-        common = data.get("results", {}).get("common", {})
-        err = str(common.get("errorCode", "0"))
-        if err != "0":
-            last_msg = f"juso errorCode={err} ({common.get('errorMessage')})"
+        if data.get("status") != "OK":
+            last_msg = f"검색 결과 없음 (status={data.get('status')})"
             continue
 
-        juso_list = data.get("results", {}).get("juso") or []
-        if not juso_list:
-            last_msg = "검색 결과 없음"
-            continue
-
-        top = juso_list[0]
-        try:
-            pnu = _build_pnu(
-                adm_cd=top.get("admCd", ""),
-                mt_yn=top.get("mtYn", "0"),
-                lnbr_mnnm=top.get("lnbrMnnm", "0"),
-                lnbr_slno=top.get("lnbrSlno", "0"),
-            )
-        except ValueError as e:
-            last_msg = f"PNU 조립 실패: {e}"
+        struct = data.get("refined", {}).get("structure", {})
+        pnu = struct.get("level4LC", "") or ""
+        if len(pnu) != 19 or not pnu.isdigit():
+            last_msg = f"PNU 형식 오류: {pnu!r}"
             continue
         return PnuResolution(
             pnu=pnu,
-            matched_jibun=top.get("jibunAddr"),
+            matched_jibun=data.get("refined", {}).get("text", q),
             status="ok",
         )
     return PnuResolution(None, None, "not_found", last_msg or "검색 결과 없음")
