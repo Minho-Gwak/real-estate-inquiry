@@ -387,6 +387,30 @@ def render_summary(n_addr: int, n_rows: int, n_errors: int, label_rows: str = "�
     )
 
 
+# 미리보기 dataframe 컬럼별 천단위·소수점 포맷 ----------------------
+
+BLD_COLUMN_CONFIG = {
+    "지상층수": st.column_config.NumberColumn(format="%d"),
+    "지하층수": st.column_config.NumberColumn(format="%d"),
+    "대지면적(㎡)": st.column_config.NumberColumn(format="%,.2f"),
+    "건축면적(㎡)": st.column_config.NumberColumn(format="%,.2f"),
+    "연면적(㎡)": st.column_config.NumberColumn(format="%,.2f"),
+    "용적률산정용연면적(㎡)": st.column_config.NumberColumn(format="%,.2f"),
+    "전용면적(㎡)": st.column_config.NumberColumn(format="%,.2f"),
+    "공용면적(㎡)": st.column_config.NumberColumn(format="%,.2f"),
+    "사용승인일": st.column_config.DateColumn(format="YYYY-MM-DD"),
+}
+
+
+def _lp_column_config(years: list[int]) -> dict:
+    cfg = {
+        "면적(㎡)": st.column_config.NumberColumn(format="%,.2f"),
+    }
+    for y in years:
+        cfg[f"{y}년 (원/㎡)"] = st.column_config.NumberColumn(format="%,d")
+    return cfg
+
+
 # -------------------- 탭 1: 건축물 면적 조회 --------------------
 
 def render_building_tab():
@@ -400,67 +424,80 @@ def render_building_tab():
         help_text="도로명주소 대신 지번 주소를 사용하세요. 광역시·특별시는 띄어 써도 붙여 써도 됩니다.",
     )
 
-    if not started:
-        return
+    # 1) 새로 조회 시작한 경우만 실제 처리 + session_state에 저장.
+    if started:
+        addresses = parse_addresses(raw)
+        if not addresses:
+            st.warning("주소를 한 개 이상 입력해 주세요.")
+        else:
+            st.write("")
+            with st.container(border=True):
+                st.markdown('<div class="section-title">진행 상황</div>',
+                            unsafe_allow_html=True)
+                overall = st.progress(0.0, text=f"0 / {len(addresses)} 처리 중…")
+                sub_slot = st.empty()
+                log = st.expander("처리 로그 자세히 보기", expanded=False)
 
-    addresses = parse_addresses(raw)
-    if not addresses:
-        st.warning("주소를 한 개 이상 입력해 주세요.")
-        return
-
-    st.write("")
-    with st.container(border=True):
-        st.markdown('<div class="section-title">진행 상황</div>',
-                    unsafe_allow_html=True)
-        overall = st.progress(0.0, text=f"0 / {len(addresses)} 처리 중…")
-        sub_slot = st.empty()
-        log = st.expander("처리 로그 자세히 보기", expanded=False)
-
-        all_rows: list[list] = []
-        for i, query in enumerate(addresses, start=1):
-            with log:
-                st.markdown(f"**[{i}/{len(addresses)}]** `{query}`")
-            sub_bar = sub_slot.progress(
-                0.0,
-                text=f"[{i}/{len(addresses)}] {query} — 조회 중…",
-            )
-
-            def on_progress(done: int, total: int, _i=i, _q=query):
-                if total > 0:
-                    sub_bar.progress(
-                        min(done / total, 1.0),
-                        text=f"[{_i}/{len(addresses)}] {_q} — 호별 면적 {done:,} / {total:,}",
+                all_rows: list[list] = []
+                for i, query in enumerate(addresses, start=1):
+                    with log:
+                        st.markdown(f"**[{i}/{len(addresses)}]** `{query}`")
+                    sub_bar = sub_slot.progress(
+                        0.0,
+                        text=f"[{i}/{len(addresses)}] {query} — 조회 중…",
                     )
 
-            rows = main.process_address(i, query, verbose=False, on_progress=on_progress)
-            all_rows.extend(rows)
-            with log:
-                note = ""
-                if rows and rows[0][-1]:
-                    note = f" · _{rows[0][-1]}_"
-                st.markdown(f"&nbsp;&nbsp;→ **{len(rows)}행** 생성{note}",
-                            unsafe_allow_html=True)
-            overall.progress(i / len(addresses),
-                             text=f"{i} / {len(addresses)} 처리 완료")
-        sub_slot.empty()
+                    def on_progress(done: int, total: int, _i=i, _q=query):
+                        if total > 0:
+                            sub_bar.progress(
+                                min(done / total, 1.0),
+                                text=f"[{_i}/{len(addresses)}] {_q} — 호별 면적 {done:,} / {total:,}",
+                            )
 
-    buf = io.BytesIO()
-    main.write_output(all_rows, buf)
-    buf.seek(0)
+                    rows = main.process_address(i, query, verbose=False, on_progress=on_progress)
+                    all_rows.extend(rows)
+                    with log:
+                        note = ""
+                        if rows and rows[0][-1]:
+                            note = f" · _{rows[0][-1]}_"
+                        st.markdown(f"&nbsp;&nbsp;→ **{len(rows)}행** 생성{note}",
+                                    unsafe_allow_html=True)
+                    overall.progress(i / len(addresses),
+                                     text=f"{i} / {len(addresses)} 처리 완료")
+                sub_slot.empty()
 
-    n_addr = len(addresses)
-    n_rows = len(all_rows)
+            st.session_state["bld_result"] = {
+                "rows": all_rows,
+                "n_addr": len(addresses),
+                "ts": datetime.now(),
+            }
+
+    # 2) session_state에 결과가 있으면 항상 렌더 (탭 전환 후에도 유지).
+    if "bld_result" in st.session_state:
+        _render_building_result()
+
+
+def _render_building_result():
+    r = st.session_state["bld_result"]
+    rows, n_addr, ts = r["rows"], r["n_addr"], r["ts"]
+
+    n_rows = len(rows)
     n_errors = sum(
-        1 for r in all_rows
-        if r[-1] and any(k in str(r[-1]) for k in ("검색", "실패", "없음"))
+        1 for row in rows
+        if row[-1] and any(k in str(row[-1]) for k in ("검색", "실패", "없음"))
     )
+
+    # 다운로드용 엑셀은 매 렌더마다 재생성 (메모리 절약, 비용 미미)
+    buf = io.BytesIO()
+    main.write_output(rows, buf)
+    buf.seek(0)
 
     st.write("")
     with st.container(border=True):
         st.markdown('<div class="section-title">조회 결과</div>',
                     unsafe_allow_html=True)
         render_summary(n_addr, n_rows, n_errors, label_rows="생성된 행")
-        filename = f"건축물면적_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        filename = f"건축물면적_{ts.strftime('%Y%m%d_%H%M%S')}.xlsx"
         st.download_button(
             "📥  엑셀 다운로드",
             data=buf,
@@ -475,8 +512,14 @@ def render_building_tab():
         st.markdown('<div class="section-title">미리보기</div>',
                     unsafe_allow_html=True)
         columns = [c[2] for c in main.COL_SPEC]
-        preview = [dict(zip(columns, row)) for row in all_rows]
-        st.dataframe(preview, use_container_width=True, hide_index=True, height=380)
+        preview = [dict(zip(columns, row)) for row in rows]
+        st.dataframe(
+            preview,
+            use_container_width=True,
+            hide_index=True,
+            height=380,
+            column_config=BLD_COLUMN_CONFIG,
+        )
 
 
 # -------------------- 탭 2: 개별공시지가 조회 --------------------
@@ -492,63 +535,75 @@ def render_landprice_tab():
         help_text="최근 3개년의 개별공시지가(원/㎡)를 조회합니다. 5/31 이전엔 작년부터 3개년.",
     )
 
-    if not started:
-        return
+    if started:
+        addresses = parse_addresses(raw)
+        if not addresses:
+            st.warning("주소를 한 개 이상 입력해 주세요.")
+        else:
+            years = landprice.determine_target_years()
 
-    addresses = parse_addresses(raw)
-    if not addresses:
-        st.warning("주소를 한 개 이상 입력해 주세요.")
-        return
+            st.write("")
+            with st.container(border=True):
+                st.markdown('<div class="section-title">진행 상황</div>',
+                            unsafe_allow_html=True)
+                overall = st.progress(0.0, text=f"0 / {len(addresses)} 처리 중…")
+                log = st.expander("처리 로그 자세히 보기", expanded=False)
 
-    years = landprice.determine_target_years()
+                results: list[landprice.LandPriceResult | None] = [None] * len(addresses)
+                completed = 0
+                with ThreadPoolExecutor(max_workers=4) as ex:
+                    futures = {
+                        ex.submit(landprice.lookup_landprice, q, years): idx
+                        for idx, q in enumerate(addresses)
+                    }
+                    for fut in as_completed(futures):
+                        idx = futures[fut]
+                        try:
+                            results[idx] = fut.result()
+                        except Exception as e:
+                            results[idx] = landprice.LandPriceResult(
+                                query=addresses[idx], matched_jibun=None, pnu=None,
+                                years=years, prices={y: None for y in years},
+                                area=None, land_use=None, zone=None,
+                                status="api_error", error_msg=str(e),
+                            )
+                        completed += 1
+                        r = results[idx]
+                        with log:
+                            bullet = {"ok": "✅", "not_found": "❓", "no_data": "—",
+                                      "api_error": "⚠️"}.get(r.status, "•")
+                            st.markdown(
+                                f"{bullet} **[{idx + 1}]** `{r.query}` → {r.status}"
+                                + (f" · _{r.error_msg}_" if r.error_msg else "")
+                            )
+                        overall.progress(
+                            completed / len(addresses),
+                            text=f"{completed} / {len(addresses)} 처리 완료",
+                        )
 
-    st.write("")
-    with st.container(border=True):
-        st.markdown('<div class="section-title">진행 상황</div>',
-                    unsafe_allow_html=True)
-        overall = st.progress(0.0, text=f"0 / {len(addresses)} 처리 중…")
-        log = st.expander("처리 로그 자세히 보기", expanded=False)
-
-        # 주소 단위로 병렬 처리 (개별공시지가는 호당 1초 미만이라 안전).
-        results: list[landprice.LandPriceResult | None] = [None] * len(addresses)
-        completed = 0
-        with ThreadPoolExecutor(max_workers=4) as ex:
-            futures = {
-                ex.submit(landprice.lookup_landprice, q, years): idx
-                for idx, q in enumerate(addresses)
+            final_results = [r for r in results if r is not None]
+            st.session_state["lp_result"] = {
+                "results": final_results,
+                "years": years,
+                "n_addr": len(addresses),
+                "ts": datetime.now(),
             }
-            for fut in as_completed(futures):
-                idx = futures[fut]
-                try:
-                    results[idx] = fut.result()
-                except Exception as e:
-                    # 예기치 못한 예외 → 더미 결과
-                    results[idx] = landprice.LandPriceResult(
-                        query=addresses[idx], matched_jibun=None, pnu=None,
-                        years=years, prices={y: None for y in years},
-                        status="api_error", error_msg=str(e),
-                    )
-                completed += 1
-                r = results[idx]
-                with log:
-                    bullet = {"ok": "✅", "not_found": "❓", "no_data": "—",
-                              "api_error": "⚠️"}.get(r.status, "•")
-                    st.markdown(
-                        f"{bullet} **[{idx + 1}]** `{r.query}` → {r.status}"
-                        + (f" · _{r.error_msg}_" if r.error_msg else "")
-                    )
-                overall.progress(
-                    completed / len(addresses),
-                    text=f"{completed} / {len(addresses)} 처리 완료",
-                )
 
-    final_results: list[landprice.LandPriceResult] = [r for r in results if r is not None]
+    if "lp_result" in st.session_state:
+        _render_landprice_result()
+
+
+def _render_landprice_result():
+    state = st.session_state["lp_result"]
+    final_results: list[landprice.LandPriceResult] = state["results"]
+    years: list[int] = state["years"]
+    n_addr: int = state["n_addr"]
+    ts: datetime = state["ts"]
 
     buf = io.BytesIO()
     landprice.write_landprice_xlsx(final_results, buf)
     buf.seek(0)
 
-    n_addr = len(addresses)
     n_ok = sum(1 for r in final_results if r.status == "ok")
     n_errors = n_addr - n_ok
 
@@ -562,7 +617,7 @@ def render_landprice_tab():
             f"조회 연도: <b>{years[0]} · {years[1]} · {years[2]}</b> (단위: 원/㎡)</div>",
             unsafe_allow_html=True,
         )
-        filename = f"개별공시지가_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        filename = f"개별공시지가_{ts.strftime('%Y%m%d_%H%M%S')}.xlsx"
         st.download_button(
             "📥  엑셀 다운로드",
             data=buf,
@@ -600,7 +655,13 @@ def render_landprice_tab():
                 note = r.error_msg
             row["비고"] = note
             preview.append(row)
-        st.dataframe(preview, use_container_width=True, hide_index=True, height=380)
+        st.dataframe(
+            preview,
+            use_container_width=True,
+            hide_index=True,
+            height=380,
+            column_config=_lp_column_config(years),
+        )
 
 
 # -------------------- 탭 렌더 --------------------
