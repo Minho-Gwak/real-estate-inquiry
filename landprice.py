@@ -32,6 +32,8 @@ VWORLD_GEOCODE_URL = "https://api.vworld.kr/req/address"
 # 토지특성정보: 가격(pblntfPclnd)과 면적(lndpclAr)을 한 번에 반환.
 LAND_ATTR_ENDPOINT = "https://api.vworld.kr/ned/data/getLandCharacteristics"
 TIMEOUT_SEC = 15
+# VWorld 키에 등록된 도메인. 로컬은 localhost, 배포 시 env로 주입.
+VWORLD_DOMAIN = os.environ.get("VWORLD_DOMAIN", "localhost")
 
 # 한국 공공 API가 default Python UA를 차단하는 사례 회피용 브라우저 UA.
 HTTP_HEADERS = {
@@ -85,7 +87,7 @@ def resolve_pnu(query: str) -> PnuResolution:
                     "address": q,
                     "crs": "EPSG:4326",
                     "format": "json",
-                    "domain": "localhost",
+                    "domain": VWORLD_DOMAIN,
                     "key": api_key,
                 },
                 headers=HTTP_HEADERS,
@@ -208,7 +210,7 @@ def fetch_land_attr(pnu: str, year: int) -> LandAttr:
                 "pnu": pnu,
                 "stdrYear": str(year),
                 "format": "json",
-                "domain": "localhost",
+                "domain": VWORLD_DOMAIN,
                 "numOfRows": "5",
                 "pageNo": "1",
             },

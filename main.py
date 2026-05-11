@@ -22,6 +22,9 @@ from openpyxl.utils import get_column_letter
 # 주소→PNU 변환은 VWorld 지오코딩 사용 (juso.go.kr는 해외 IP에서 timeout 발생).
 DATA_GO_KR_KEY = os.environ.get("DATA_GO_KR_KEY", "")
 VWORLD_API_KEY = os.environ.get("VWORLD_API_KEY", "")
+# VWorld API 키는 발급 시 등록한 도메인과 요청의 domain 파라미터가 일치해야 함.
+# 로컬은 localhost, 클라우드 배포 시 실제 호스트명을 env로 주입.
+VWORLD_DOMAIN = os.environ.get("VWORLD_DOMAIN", "localhost")
 
 VWORLD_GEOCODE_URL = "https://api.vworld.kr/req/address"
 BR_BASE = "https://apis.data.go.kr/1613000/BldRgstHubService"
@@ -81,7 +84,7 @@ def lookup_address(jibun_query: str) -> AddressCode | None:
             "address": q,
             "crs": "EPSG:4326",
             "format": "json",
-            "domain": "localhost",
+            "domain": VWORLD_DOMAIN,
             "key": VWORLD_API_KEY,
         }
         try:
